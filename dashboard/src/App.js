@@ -1,30 +1,42 @@
+// src/App.js
 import React, { useEffect, useState } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import axios from 'axios';
-import Dashboard from './Dashboard';
 
-axios.defaults.baseURL = 'http://192.168.32.87:5000';
+import Dashboard from './components/Dashboard';
+import Devices from './components/Devices';
+import Settings from './components/Settings';
+import Roles from './components/Roles';
+import RecentActivity from './components/RecentActivity';
+import LoginScreen from './components/LoginScreen';
+import MainLayout from './components/layout/MainLayout';
+import DeviceDetail from './components/DeviceDetail';
+import DeviceInventory from './pages/device/DeviceInventory';
+import DeviceExtensions from './pages/device/DeviceExtensions';
+
+
+axios.defaults.baseURL = 'http://192.168.32.87:5000'; // update if needed
 axios.defaults.withCredentials = true;
 
 function App() {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
   const [loggedIn, setLoggedIn] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
 
-  // ✅ Check session on mount
   useEffect(() => {
     axios.get('/api/me')
-      .then(res => {
+      .then((res) => {
         if (res.data.username) {
           setLoggedIn(true);
         }
+        setCheckingSession(false);
       })
-      .catch(err => {
-        setLoggedIn(false); // Not logged in
+      .catch(() => {
+        setLoggedIn(false);
+        setCheckingSession(false);
       });
   }, []);
 
-  const handleLogin = async () => {
+  const handleLogin = async (username, password, setError) => {
     try {
       const res = await axios.post('/api/login', { username, password });
       if (res.data.status === 'logged in') {
@@ -33,42 +45,38 @@ function App() {
       } else {
         setError('Invalid credentials');
       }
-    } catch (err) {
+    } catch {
       setError('Login failed');
     }
   };
 
-  if (loggedIn) return <Dashboard />;
+  const handleLogout = () => {
+    setLoggedIn(false);
+  };
+
+  if (checkingSession) return <div className="p-10 text-center">Checking session...</div>;
+
+  if (!loggedIn) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100">
-      <div className="bg-white p-8 rounded shadow-md w-full max-w-sm">
-        <h2 className="text-2xl font-bold mb-6 text-center text-gray-700">System Monitor Login</h2>
-
-        <input
-          className="w-full px-4 py-2 border border-gray-300 rounded mb-4"
-          placeholder="Username"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-        />
-        <input
-          type="password"
-          className="w-full px-4 py-2 border border-gray-300 rounded mb-4"
-          placeholder="Password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-        {error && <div className="text-red-500 text-sm mb-2">{error}</div>}
-        <button
-          className="w-full bg-green-600 text-white py-2 rounded hover:bg-green-700"
-          onClick={handleLogin}
-        >
-          Login
-        </button>
-      </div>
-    </div>
+    <Router>
+      <Routes>
+        <Route path="/" element={<MainLayout onLogout={handleLogout} />}>
+          <Route path="dashboard" element={<Dashboard />} />
+          <Route path="devices" element={<Devices />} />
+          <Route path="settings" element={<Settings />} />
+          <Route path="roles" element={<Roles />} />
+          <Route path="activity" element={<RecentActivity />} />
+          <Route path="*" element={<Navigate to="/dashboard" />} />
+          <Route path="/devices/:deviceId/*" element={<DeviceDetail />} />
+	  <Route path="/devices/:deviceId/inventory" element={<DeviceInventory />} />
+	  <Route path="/devices/:deviceId/extensions" element={<DeviceExtensions />} />
+	 </Route>
+      </Routes>
+    </Router>
   );
 }
 
 export default App;
-
