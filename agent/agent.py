@@ -80,6 +80,7 @@ def get_gnome_version():
 
 # ---------------- EXTENSIONS ----------------
 
+
 def collect_extensions():
     extensions_dir = os.path.expanduser("~/.vscode/extensions")
     try:
@@ -340,16 +341,64 @@ def fetch_pending_process_kills():
     return []
 
 def enforce_process_kills():
-    targets = fetch_pending_process_kills()
-    for name in targets:
-        for proc in psutil.process_iter(['pid', 'name']):
-            try:
-                if name.lower() in proc.info['name'].lower():
-                    os.kill(proc.info['pid'], 9)
-                    print(f" Killed {proc.info['name']} (PID {proc.info['pid']})")
-            except:
-                pass
+    targets = fetch_pending_kill_list()  # this gives list of dicts
+    for item in targets:
+        if isinstance(item, dict):
+            name = item.get("name")
+            mode = item.get("mode", "once")
+        else:
+            continue
 
+        if not name:
+            continue
+
+        print(f" Attempting to kill process: {name} [mode: {mode}]")
+        success = kill_process(name)
+
+        if success and mode == "once":
+            clear_process_kill(DEVICE_ID, name)
+
+def clear_process_kill(device_id, name):
+    try:
+        res = requests.delete(f"{SERVER_URL}/api/devices/{device_id}/processes/pending-kill/{name}")
+        if res.status_code == 200:
+            print(f" Cleared '{name}' from kill queue (once mode).")
+    except Exception as e:
+        print(f" Failed to clear kill for {name}: {e}")
+
+
+def fetch_pending_kill_list():
+    try:
+        url = f"{SERVER_URL}/api/devices/{DEVICE_ID}/processes/pending-kill"
+        response = requests.get(url)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f" Failed to fetch process kill list: {e}")
+        return []
+
+
+def notify_backend_of_kill(name):
+    try:
+        requests.post(f"{SERVER_URL}/api/devices/{DEVICE_ID}/processes/{name}/kill/complete")
+    except:
+        pass
+
+def kill_process(name):
+    killed = []
+    for proc in psutil.process_iter(['pid', 'name']):
+        try:
+            if proc.info['name'].lower() == name.lower():
+                os.kill(proc.info['pid'], 9)  # SIGKILL
+                killed.append(proc.info['pid'])
+        except Exception as e:
+            print(f" Failed to kill process {proc.info['pid']}: {e}")
+    if killed:
+        print(f" Killed process '{name}' -> PIDs: {killed}")
+        return True
+    else:
+        print(f" No running process named '{name}' found.")
+        return False
 
 # ---------------- MAIN PUSH ----------------
 
