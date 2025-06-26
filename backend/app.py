@@ -16,10 +16,11 @@ device_software_store = {}
 pending_service_actions = {}
 device_services_store = {}
 pending_process_kills = {}
+EXTENSION_BLACKLISTS = {}
 
 
 # Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///../database.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
 app.config['SECRET_KEY'] = '4ad0fcf56a5e23464bc68e21c796c789'
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_SECURE'] = False  # Set True if using HTTPS
@@ -29,6 +30,14 @@ db.init_app(app)
 bcrypt = Bcrypt(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
+with app.app_context():
+    db.create_all()
+
+    if not User.query.filter_by(username='admin').first():
+        hashed_password = bcrypt.generate_password_hash("admin123").decode('utf-8')
+        admin = User(username="admin", password=hashed_password)
+        db.session.add(admin)
+        db.session.commit()
 
 # CORS: Allow frontend at specific IP
 CORS(app, supports_credentials=True, origins=["http://192.168.32.87:3000"])
@@ -41,11 +50,15 @@ def load_user(user_id):
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
-    user = User.query.filter_by(username=data['username']).first()
-    if user and bcrypt.check_password_hash(user.password, data['password']):
+    username = data.get("username")
+    password = data.get("password")
+
+    user = User.query.filter_by(username=username).first()
+    if user and bcrypt.check_password_hash(user.password, password):
         login_user(user)
-        return jsonify({'status': 'logged in'})
-    return jsonify({'status': 'fail'}), 401
+        return jsonify({"status": "logged in", "username": user.username})
+    else:
+        return jsonify({"error": "Invalid credentials"}), 401
 
 @app.route('/api/logout', methods=['POST'])
 @login_required
@@ -107,6 +120,8 @@ def get_inventory(hostname):
         return jsonify({'error': 'Inventory not found'}), 404
     return jsonify(device['inventory'])
 
+# ---- ROUTES FOR EXTENSIONS------
+
 @app.route('/api/devices/<device_id>/extension-policy', methods=['GET'])
 def get_policy(device_id):
     policies = ExtensionPolicy.query.filter_by(device_id=device_id, mode='whitelist').all()
@@ -117,25 +132,37 @@ def get_policy(device_id):
 
 @app.route('/api/devices/<device_id>/extension-policy', methods=['POST'])
 def update_policy(device_id):
-    data = request.json  # should be like {"vscode": ["Prettier"], "browser": ["uBlock"]}
-    ExtensionPolicy.query.filter_by(device_id=device_id, mode='whitelist').delete()
-    for ext_type, names in data.items():
-        for name in names:
-            db.session.add(ExtensionPolicy(
-                device_id=device_id,
-                ext_type=ext_type,
-                name=name,
-                mode='whitelist'  #  Set mode
-            ))
-    db.session.commit()
-    return jsonify({"status": "success"})
+    data = request.json  # Expected: {"vscode": ["ext1", "ext2"], "browser": [...]}
+
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid payload"}), 400
+
+    try:
+        # Delete existing whitelist entries
+        ExtensionPolicy.query.filter_by(device_id=device_id, mode='whitelist').delete()
+        db.session.commit()
+
+        # Add new whitelist entries
+        for ext_type, names in data.items():
+            for name in names:
+                db.session.add(ExtensionPolicy(
+                    device_id=device_id,
+                    ext_type=ext_type,
+                    name=name,
+                    mode='whitelist'
+                ))
+        db.session.commit()
+        return jsonify({"status": "whitelist updated"})
+
+    except Exception as e:
+        print(f"❌ Failed to update whitelist: {e}")
+        return jsonify({"error": "Server failed to update whitelist"}), 500
 
 
 @app.route('/api/devices/<device_id>/extensions', methods=['POST'])
 def receive_extensions(device_id):
     data = request.json
-
-    print(f"🔧 Incoming extensions for {device_id}: {data}")  #  Log raw input
+    print(f"🔧 Incoming extensions for {device_id}: {data}")
 
     if not isinstance(data, list):
         return jsonify({"error": "Expected a list of extensions"}), 400
@@ -149,11 +176,9 @@ def receive_extensions(device_id):
             "os": "unknown"
         }
 
-    # Save the extensions
     device_store[device_id]["extensions"] = data
-    print(f" Stored extensions for {device_id}: {device_store[device_id]['extensions']}")
+    print(f"✅ Stored extensions for {device_id}: {device_store[device_id]['extensions']}")
     return jsonify({"status": "extensions received"})
-
 
 @app.route('/api/devices/<device_id>/extensions', methods=['GET'])
 def get_device_extensions(device_id):
@@ -168,30 +193,26 @@ def request_extension_removal(device_id, ext_name):
     if device_id not in pending_removals:
         pending_removals[device_id] = []
     pending_removals[device_id].append(ext_name)
-    print(f" Marked for removal: {ext_name} from {device_id}")
+    print(f"🗑️ Marked for removal: {ext_name} from {device_id}")
     return jsonify({"status": "marked for removal"})
 
 @app.route('/api/devices/<device_id>/extensions/pending-removal', methods=['GET'])
 def get_pending_removals(device_id):
     return jsonify(pending_removals.get(device_id, []))
 
+# ---- BLACKLIST (now in-memory, not DB) ----
+
 @app.route('/api/devices/<device_id>/extension-blacklist', methods=['GET'])
 def get_blacklist(device_id):
-    # Reuse ExtensionPolicy table with a special type 'blacklist'
-    entries = ExtensionPolicy.query.filter_by(device_id=device_id, ext_type='blacklist').all()
-    blacklist = [e.name for e in entries]
-    return jsonify({'vscode': blacklist})  # Match structure with frontend expectations
+    return jsonify({'vscode': EXTENSION_BLACKLISTS.get(device_id, [])})
 
 @app.route('/api/devices/<device_id>/extension-blacklist', methods=['POST'])
 def update_blacklist(device_id):
-    data = request.json  # Expecting { "vscode": ["tabnine.xyz", ...] }
-    # Clear existing blacklist for this device
-    ExtensionPolicy.query.filter_by(device_id=device_id, ext_type='blacklist').delete()
-    # Insert new entries
-    for name in data.get("vscode", []):
-        db.session.add(ExtensionPolicy(device_id=device_id, ext_type="blacklist", name=name))
-    db.session.commit()
+    data = request.json  # Expecting { "vscode": ["tabnine", "some.other.id"] }
+    EXTENSION_BLACKLISTS[device_id] = data.get("vscode", [])
+    print(f"🔒 Updated in-memory blacklist for {device_id}: {EXTENSION_BLACKLISTS[device_id]}")
     return jsonify({"status": "blacklist updated"})
+
 
 @app.route('/api/devices/<device_id>/software', methods=['POST'])
 def receive_software(device_id):
@@ -259,7 +280,7 @@ def queue_service_action(device_id, service_name, action):
         "timestamp": datetime.datetime.now().isoformat()
     })
 
-    print(f" Queued service action: {action} on {service_name} for {device_id}")
+    print(f"📦 Queued service action: {action} on {service_name} for {device_id}")
     return jsonify({"status": "queued", "action": action})
 
 # 4. GET: Agent polls this to fetch all pending actions
@@ -269,13 +290,25 @@ def get_pending_service_actions(device_id):
 
 @app.route('/api/devices/<device_id>/processes/<name>/kill', methods=['POST'])
 def queue_process_kill(device_id, name):
+    data = request.json or {}
+    mode = data.get("mode", "once")  # mode can be 'once' or 'forever'
+
     if device_id not in pending_process_kills:
         pending_process_kills[device_id] = []
-    pending_process_kills[device_id].append(name)
-    print(f" Queued kill for '{name}' on {device_id}")
-    return jsonify({"status": "queued"}), 200
 
-@app.route('/api/devices/<device_id>/processes/pending-kills', methods=['GET'])
+    # Avoid duplicates
+    exists = any(entry["name"] == name and entry["mode"] == mode for entry in pending_process_kills[device_id])
+    if not exists:
+        pending_process_kills[device_id].append({
+            "name": name,
+            "mode": mode,
+            "timestamp": datetime.datetime.now().isoformat()
+        })
+        print(f"📦 Queued process kill: {name} ({mode}) for {device_id}")
+    return jsonify({"status": "queued", "process": name, "mode": mode})
+
+
+@app.route('/api/devices/<device_id>/processes/pending-kill', methods=['GET'])
 def get_pending_process_kills(device_id):
     return jsonify(pending_process_kills.get(device_id, []))
 
@@ -284,6 +317,32 @@ def clear_kill_queue(device_id, name):
     if device_id in pending_process_kill:
         pending_process_kill[device_id] = [p for p in pending_process_kill[device_id] if p != name]
     return jsonify({"status": "removed", "target": name})
+
+@app.route('/api/devices/<device_id>/processes/pending-kill/<name>', methods=['DELETE'])
+def delete_pending_kill(device_id, name):
+    if device_id not in pending_process_kills:
+        return jsonify({"message": "Device not found"}), 404
+
+    before = pending_process_kills[device_id]
+    print(f"🔍 Before delete: {before}")
+
+    updated = []
+    deleted = False
+
+    for item in before:
+        # Match exactly name AND mode
+        if item.get("name") == name and item.get("mode") == "once":
+            deleted = True
+            continue  # Skip this item (delete)
+        updated.append(item)
+
+    if not deleted:
+        return jsonify({"message": "No matching kill entry found"}), 404
+
+    pending_process_kills[device_id] = updated
+    print(f"✅ Cleared 'once' mode kill for '{name}' on {device_id}")
+    return jsonify({"status": "cleared"}), 200
+
 
 # Run App
 if __name__ == '__main__':
