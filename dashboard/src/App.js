@@ -13,6 +13,7 @@ import MainLayout from './components/layout/MainLayout';
 import DeviceDetail from './components/DeviceDetail';
 import DeviceInventory from './pages/device/DeviceInventory';
 import DeviceExtensions from './pages/device/DeviceExtensions';
+import DeviceSoftware from './pages/device/DeviceSoftware';
 
 
 axios.defaults.baseURL = 'http://192.168.32.87:5000'; // update if needed
@@ -73,6 +74,7 @@ function App() {
           <Route path="/devices/:deviceId/*" element={<DeviceDetail />} />
 	  <Route path="/devices/:deviceId/inventory" element={<DeviceInventory />} />
 	  <Route path="/devices/:deviceId/extensions" element={<DeviceExtensions />} />
+	  <Route path="/devices/:deviceId/software" element={<DeviceSoftware />} />
 	 </Route>
       </Routes>
     </Router>
