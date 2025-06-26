@@ -330,6 +330,27 @@ def enforce_service_actions():
             print(f" Failed to {action} service '{service}': {e}")
         
 
+def fetch_pending_process_kills():
+    try:
+        res = requests.get(f"{SERVER_URL}/api/devices/{DEVICE_ID}/processes/pending-kills")
+        if res.status_code == 200:
+            return res.json()
+    except:
+        pass
+    return []
+
+def enforce_process_kills():
+    targets = fetch_pending_process_kills()
+    for name in targets:
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                if name.lower() in proc.info['name'].lower():
+                    os.kill(proc.info['pid'], 9)
+                    print(f" Killed {proc.info['name']} (PID {proc.info['pid']})")
+            except:
+                pass
+
+
 # ---------------- MAIN PUSH ----------------
 
 def push_data():
@@ -384,3 +405,4 @@ if __name__ == "__main__":
     push_services()
     handle_pending_service_removals()
     enforce_service_actions()
+    enforce_process_kills()
