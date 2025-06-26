@@ -25,6 +25,16 @@ export default function DeviceSoftware() {
       .catch(err => console.error(err));
   };
 
+  const killProcess = (name) => {
+    axios.post(`/api/devices/${deviceId}/processes/${encodeURIComponent(name)}/kill`)
+      .then(() => {
+        alert(`${name} has been marked for termination.`);
+        axios.get(`/api/devices/${deviceId}/software`)
+          .then(res => setSoftwareList(res.data));
+      })
+      .catch(err => console.error(err));
+  };
+
   const handleServiceAction = (action, name) => {
     const url = action === 'delete'
       ? `/api/devices/${deviceId}/services/${name}/delete`
@@ -67,15 +77,20 @@ export default function DeviceSoftware() {
           className="px-4 py-2 border rounded-lg w-full max-w-sm text-sm shadow-sm"
         />
         <div className="space-x-2 ml-4">
-          {['all', 'running', 'installed', 'running-services'].map(state => (
+          {[
+            { key: 'all', label: 'All' },
+            { key: 'running', label: 'Running Processes' },
+            { key: 'installed', label: 'Current Softwares' },
+            { key: 'running-services', label: 'Running Services' }
+          ].map(({ key, label }) => (
             <button
-              key={state}
-              onClick={() => setFilter(state)}
+              key={key}
+              onClick={() => setFilter(key)}
               className={`px-4 py-2 rounded-lg text-sm capitalize transition-colors duration-200 ${
-                filter === state ? 'bg-indigo-600 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-800'
+                filter === key ? 'bg-indigo-600 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-800'
               }`}
             >
-              {state === 'running' ? 'Running Processes' : state.replace('-', ' ')}
+              {label}
             </button>
           ))}
         </div>
@@ -129,9 +144,15 @@ export default function DeviceSoftware() {
                   </div>
                   <div className="flex flex-col items-end space-y-2">
                     <span className={`text-xs px-2 py-1 rounded-full ${stateColor[s.state] || 'bg-gray-100 text-gray-700'}`}>{s.state}</span>
-                    <button onClick={() => uninstallSoftware(s.name)} className="px-3 py-1 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 shadow">
-                      Uninstall
-                    </button>
+                    {s.state === 'running' && s.type === 'process' ? (
+                      <button onClick={() => killProcess(s.name)} className="px-3 py-1 text-sm bg-red-500 text-white rounded-lg hover:bg-red-600 shadow">
+                        Kill
+                      </button>
+                    ) : (
+                      <button onClick={() => uninstallSoftware(s.name)} className="px-3 py-1 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 shadow">
+                        Uninstall
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
