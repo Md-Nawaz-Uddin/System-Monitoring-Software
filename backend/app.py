@@ -17,6 +17,8 @@ pending_service_actions = {}
 device_services_store = {}
 pending_process_kills = {}
 EXTENSION_BLACKLISTS = {}
+pending_system_actions = {}
+
 
 
 # Configuration
@@ -342,6 +344,69 @@ def delete_pending_kill(device_id, name):
     pending_process_kills[device_id] = updated
     print(f"✅ Cleared 'once' mode kill for '{name}' on {device_id}")
     return jsonify({"status": "cleared"}), 200
+
+@app.route('/api/devices/<device_id>/action/shutdown', methods=['POST'])
+def request_shutdown(device_id):
+    pending_system_actions.setdefault(device_id, []).append('shutdown')
+    return jsonify({"status": "shutdown requested"})
+
+@app.route('/api/devices/<device_id>/action/restart', methods=['POST'])
+def request_restart(device_id):
+    pending_system_actions.setdefault(device_id, []).append('restart')
+    return jsonify({"status": "restart requested"})
+
+@app.route('/api/devices/<device_id>/actions/pending', methods=['GET'])
+def get_pending_system_actions(device_id):
+    return jsonify(pending_system_actions.get(device_id, []))
+
+@app.route('/api/devices/<device_id>/actions/clear', methods=['POST'])
+def clear_pending_system_actions(device_id):
+    pending_system_actions.pop(device_id, None)
+    return jsonify({"status": "cleared"})
+
+@app.route('/api/devices/<device_id>/actions/patch-system', methods=['POST'])
+def trigger_patch_system(device_id):
+    if device_id not in pending_service_actions:
+        pending_service_actions[device_id] = []
+    pending_service_actions[device_id].append({
+    "action": "patch",
+    "service": "patch-system"
+})
+    return jsonify({"status": "patch queued"})
+
+@app.route('/api/devices/<device_id>/actions', methods=['GET'])
+def get_pending_actions(device_id):
+    return jsonify(pending_service_actions.get(device_id, []))
+
+
+@app.route('/api/devices/<device_id>/actions/patch-result', methods=['POST'])
+def receive_patch_result(device_id):
+    data = request.json
+    output = data.get("output", "")
+    status = data.get("status", "unknown")
+
+    if "patch_results" not in device_store:
+        device_store["patch_results"] = {}
+    device_store["patch_results"][device_id] = {
+        "status": status,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+    if device_id in pending_service_actions:
+        pending_service_actions[device_id] = [
+            action for action in pending_service_actions[device_id]
+            if action != "patch-system"
+        ]
+
+    return jsonify({"status": "result stored"})
+
+
+@app.route('/api/devices/<device_id>/actions/patch-status', methods=['GET'])
+def get_patch_status(device_id):
+    result = device_store.get("patch_results", {}).get(device_id)
+    if not result:
+        return jsonify({"status": "pending"})
+    return jsonify(result)
 
 
 # Run App
