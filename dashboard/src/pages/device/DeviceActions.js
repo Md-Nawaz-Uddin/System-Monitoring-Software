@@ -1,13 +1,22 @@
+// src/pages/devices/DeviceActions.js
+
 import React from 'react';
 import { useParams } from 'react-router-dom';
 import axios from 'axios';
 
 export default function DeviceActions() {
-  const { deviceId } = useParams();  // Use `id` from route params
+  const { deviceId } = useParams();  // Dynamic device ID from URL
 
   const performAction = async (action) => {
     try {
-      await axios.post(`/api/devices/${deviceId}/action/${action}`);
+      const endpoint =
+        action === 'patch'
+          ? `/api/devices/${deviceId}/actions/patch-system`
+          : `/api/devices/${deviceId}/action/${action}`;
+
+      console.log("🔧 Sending action to:", endpoint);
+      await axios.post(endpoint);
+
       alert(`✅ ${action.charAt(0).toUpperCase() + action.slice(1)} command sent successfully!`);
     } catch (error) {
       console.error(`❌ Failed to send ${action} command:`, error);
@@ -17,7 +26,9 @@ export default function DeviceActions() {
 
   return (
     <div className="p-6 bg-gray-100 min-h-screen">
-      <h2 className="text-3xl font-bold text-gray-800 mb-6">System Actions for <span className="text-blue-600">{deviceId}</span></h2>
+      <h2 className="text-3xl font-bold text-gray-800 mb-6">
+        System Actions for <span className="text-blue-600">{deviceId}</span>
+      </h2>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         <ActionButton
