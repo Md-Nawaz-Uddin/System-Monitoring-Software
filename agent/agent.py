@@ -115,12 +115,16 @@ def fetch_blacklist():
 
 def enforce_policy(installed, whitelist):
     allowed = [name.lower() for name in whitelist.get("vscode", [])]
+    
+    home_dir = os.path.expanduser("~")
+    user_data_dir = os.path.join(home_dir, ".vscode-user-data")
+
     for ext in installed:
         if ext.lower() not in allowed:
             subprocess.run([
                 'code',
                 '--no-sandbox',
-                '--user-data-dir=/home/nawazuddinm/.vscode-user-data',
+                f'--user-data-dir={user_data_dir}',
                 '--uninstall-extension',
                 ext
             ])
@@ -400,6 +404,32 @@ def kill_process(name):
         print(f" No running process named '{name}' found.")
         return False
 
+#---------------------SYSTEM ACTIONS----------------
+def check_and_execute_system_actions():
+    try:
+        res = requests.get(f"{SERVER_URL}/api/devices/{DEVICE_ID}/actions/pending")
+        if res.status_code == 200:
+            actions = res.json()
+            if not actions:
+                return
+
+            for action in actions:
+                if action == 'shutdown':
+                    subprocess.run(['shutdown', '-h', 'now'])
+                elif action == 'restart':
+                    subprocess.run(['reboot'])
+
+            # After executing actions, clear them on the server
+            try:
+                requests.post(f"{SERVER_URL}/api/devices/{DEVICE_ID}/actions/clear")
+            except:
+                pass
+
+    except Exception as e:
+        print(f"Error executing system action: {e}")
+
+
+
 # ---------------- MAIN PUSH ----------------
 
 def push_data():
@@ -445,6 +475,52 @@ def handle_pending_service_removals():
         stop_and_disable_service(service)
 
 
+def apply_patch_update():
+    try:
+        update = subprocess.run(
+            ['sudo', 'apt', 'update', '-y'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=300
+        )
+        upgrade = subprocess.run(
+            ['sudo', 'apt', 'upgrade', '-y'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=600
+        )
+        combined_output = update.stdout.decode() + "\n" + upgrade.stdout.decode()
+
+        # Report result back
+        requests.post(
+            f"{SERVER_URL}/api/devices/{DEVICE_ID}/actions/patch-result",
+            json={
+                "output": combined_output,
+                "status": "success"
+            }
+        )
+    except Exception as e:
+        requests.post(
+            f"{SERVER_URL}/api/devices/{DEVICE_ID}/actions/patch-result",
+            json={
+                "output": str(e),
+                "status": "failed"
+            }
+        )
+
+def handle_pending_actions():
+    try:
+        res = requests.get(f"{SERVER_URL}/api/devices/{DEVICE_ID}/actions")
+        if res.status_code == 200:
+            actions = res.json()
+
+            for action_item in actions:
+                if isinstance(action_item, dict) and action_item.get("action") == "patch":
+                    apply_patch_update()
+    except Exception as e:
+        print(f"Error handling patch actions: {e}")
+
+
 # ---------------- RUN ----------------
 
 if __name__ == "__main__":
@@ -455,3 +531,5 @@ if __name__ == "__main__":
     handle_pending_service_removals()
     enforce_service_actions()
     enforce_process_kills()
+    check_and_execute_system_actions()
+    handle_pending_actions()
