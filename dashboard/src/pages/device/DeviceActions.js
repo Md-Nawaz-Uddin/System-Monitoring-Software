@@ -5,7 +5,7 @@ import { useParams } from 'react-router-dom';
 import axios from 'axios';
 
 export default function DeviceActions() {
-  const { deviceId } = useParams();  // Dynamic device ID from URL
+  const { deviceId } = useParams();
 
   const performAction = async (action) => {
     try {
@@ -17,7 +17,7 @@ export default function DeviceActions() {
       console.log("🔧 Sending action to:", endpoint);
       await axios.post(endpoint);
 
-      alert(`✅ ${action.charAt(0).toUpperCase() + action.slice(1)} command sent successfully!`);
+      alert(`✅ ${action.charAt(0).toUpperCase() + action.slice(1)} sent successfully!`);
     } catch (error) {
       console.error(`❌ Failed to send ${action} command:`, error);
       alert(`❌ ${action} failed`);
@@ -35,36 +35,49 @@ export default function DeviceActions() {
           label="Shutdown"
           color="bg-red-600"
           icon="⏻"
+          buttonText="Shutdown Now"
           onClick={() => performAction('shutdown')}
         />
         <ActionButton
           label="Restart"
           color="bg-yellow-500"
           icon="🔄"
+          buttonText="Restart Now"
           onClick={() => performAction('restart')}
         />
         <ActionButton
           label="Lock User"
           color="bg-blue-600"
           icon="🔒"
+          buttonText="Lock Now"
           onClick={() => performAction('lock')}
+        />
+        <ActionButton
+          label="Unlock User"
+          color="bg-blue-400"
+          icon="🔓"
+          buttonText="Unlock Now"
+          onClick={() => performAction('unlock')}
         />
         <ActionButton
           label="Remote Access"
           color="bg-purple-600"
           icon="🖥️"
+          buttonText="Request Access"
           onClick={() => performAction('remote')}
         />
         <ActionButton
           label="Enable USB (Temp)"
           color="bg-green-600"
           icon="🔌"
+          buttonText="Enable Temporarily"
           onClick={() => performAction('enable-usb')}
         />
         <ActionButton
           label="Patch System"
           color="bg-indigo-600"
           icon="🛠️"
+          buttonText="Apply Patch"
           onClick={() => performAction('patch')}
         />
       </div>
@@ -72,16 +85,16 @@ export default function DeviceActions() {
   );
 }
 
-function ActionButton({ label, icon, color, onClick }) {
+function ActionButton({ label, icon, color, buttonText, onClick }) {
   return (
     <div className={`rounded-lg shadow-md p-6 flex flex-col items-center justify-center ${color} text-white`}>
       <div className="text-4xl mb-2">{icon}</div>
       <h3 className="text-xl font-semibold mb-2">{label}</h3>
       <button
         onClick={onClick}
-        className="mt-2 px-4 py-2 bg-white text-black rounded hover:bg-gray-200 transition"
+        className="mt-2 px-4 py-2 bg-white text-black font-medium rounded hover:bg-gray-200 transition"
       >
-        Execute
+        {buttonText}
       </button>
     </div>
   );
