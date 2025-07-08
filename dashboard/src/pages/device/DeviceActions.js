@@ -1,26 +1,45 @@
-// src/pages/devices/DeviceActions.js
-
-import React from 'react';
+import React, { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import axios from 'axios';
 
 export default function DeviceActions() {
   const { deviceId } = useParams();
+  const [showUsbModal, setShowUsbModal] = useState(false);
+  const [duration, setDuration] = useState(10); // in minutes
 
-  const performAction = async (action) => {
+  const performAction = async (action, data = {}) => {
+  try {
+    // Handle USB action by opening modal to choose duration
+    if (action === 'enable-usb') {
+      setShowUsbModal(true);  // Show modal and stop further execution
+      return;
+    }
+
+    // Determine correct endpoint
+    const endpoint =
+      action === 'patch'
+        ? `/api/devices/${deviceId}/actions/patch-system`
+        : `/api/devices/${deviceId}/action/${action}`;
+
+    console.log("🔧 Sending action to:", endpoint);
+    await axios.post(endpoint, data);  // Include optional payload (like duration)
+
+    alert(`✅ ${action.charAt(0).toUpperCase() + action.slice(1)} sent successfully!`);
+  } catch (error) {
+    console.error(`❌ Failed to send ${action} command:`, error);
+    alert(`❌ ${action} failed`);
+  }
+};
+
+
+  const submitUsbEnable = async () => {
     try {
-      const endpoint =
-        action === 'patch'
-          ? `/api/devices/${deviceId}/actions/patch-system`
-          : `/api/devices/${deviceId}/action/${action}`;
-
-      console.log("🔧 Sending action to:", endpoint);
-      await axios.post(endpoint);
-
-      alert(`✅ ${action.charAt(0).toUpperCase() + action.slice(1)} sent successfully!`);
-    } catch (error) {
-      console.error(`❌ Failed to send ${action} command:`, error);
-      alert(`❌ ${action} failed`);
+      await axios.post(`/api/devices/${deviceId}/actions/enable-usb`, { duration });
+      alert(`✅ USB enabled for ${duration} minutes`);
+      setShowUsbModal(false);
+    } catch (err) {
+      console.error("❌ USB enable failed", err);
+      alert("❌ Failed to enable USB");
     }
   };
 
@@ -81,6 +100,47 @@ export default function DeviceActions() {
           onClick={() => performAction('patch')}
         />
       </div>
+
+      {/* USB Modal */}
+      {showUsbModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md shadow-lg">
+            <h3 className="text-xl font-semibold mb-4 text-gray-800">Enable USB Temporarily</h3>
+
+            <label className="block mb-2 text-gray-700">Select Duration</label>
+            <select
+  value={duration}
+  onChange={(e) => setDuration(parseInt(e.target.value))}
+  className="w-full px-4 py-2 border border-gray-300 rounded mb-4 bg-white text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
+>
+  <option value={5}>5 minutes</option>
+  <option value={15}>15 minutes</option>
+  <option value={30}>30 minutes</option>
+  <option value={60}>1 hour</option>
+  <option value={120}>2 hours</option>
+  <option value={360}>6 hours</option>
+  <option value={720}>12 hours</option>
+  <option value={1440}>1 day</option>
+</select>
+     
+            
+	     <div className="flex justify-end space-x-4">
+              <button
+                className="px-4 py-2 bg-red-400 rounded hover:bg-red-500"
+                onClick={() => setShowUsbModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+                onClick={submitUsbEnable}
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
