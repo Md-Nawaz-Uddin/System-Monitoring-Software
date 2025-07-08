@@ -6,6 +6,7 @@ import psutil
 import subprocess
 import datetime
 import os
+import getpass
 from datetime import datetime
 
 SERVER_URL = "http://192.168.32.87:5000"
@@ -200,14 +201,26 @@ def uninstall_software(name):
 
 def enforce_software_uninstall():
     targets = fetch_software_uninstall_list()
+    cleared = []
+
     for item in targets:
         if isinstance(item, dict):
             name = item.get("name")
         else:
             name = item
+
         if name:
             print(f"Uninstalling software: {name}")
             uninstall_software(name)
+            cleared.append(name)
+
+    # Remove completed uninstalls from pending_removals
+    try:
+        if cleared:
+            requests.post(f"{SERVER_URL}/api/devices/{DEVICE_ID}/software/remove-completed", json=cleared)
+    except:
+        pass
+
 
 def get_running_processes():
     processes = []
@@ -312,28 +325,53 @@ def fetch_pending_service_actions():
     return []
 
 def enforce_service_actions():
-    actions = fetch_pending_service_actions()
-    for item in actions:
-        service = item.get("service")
-        action = item.get("action")
+    try:
+        res = requests.get(f"{SERVER_URL}/api/devices/{DEVICE_ID}/services/pending-actions")
+        if res.status_code == 200:
+            actions = res.json()
+            completed = []
 
-        try:
-            if action == "start":
-                subprocess.run(["systemctl", "start", service], check=True)
-            elif action == "stop":
-                subprocess.run(["systemctl", "stop", service], check=True)
-            elif action == "restart":
-                subprocess.run(["systemctl", "restart", service], check=True)
-            elif action == "disable":
-                subprocess.run(["systemctl", "disable", service], check=True)
-            elif action == "delete":
-                subprocess.run(["systemctl", "stop", service], check=True)
-                subprocess.run(["systemctl", "disable", service], check=True)
-                subprocess.run(["systemctl", "mask", service], check=True)
-            print(f" {action.capitalize()} executed for {service}")
-        except Exception as e:
-            print(f" Failed to {action} service '{service}': {e}")
-        
+            for item in actions:
+                service = item.get("service")
+                action = item.get("action")
+
+                if not service or not action:
+                    continue
+
+                print(f"⏳ Executing {action} on service {service}...")
+
+                try:
+                    if action == "start":
+                        subprocess.run(["systemctl", "start", service])
+                    elif action == "stop":
+                        subprocess.run(["systemctl", "stop", service])
+                    elif action == "restart":
+                        subprocess.run(["systemctl", "restart", service])
+                    elif action == "disable":
+                        subprocess.run(["systemctl", "disable", service])
+                    elif action == "delete":
+                        subprocess.run(["systemctl", "stop", service])
+                        subprocess.run(["systemctl", "disable", service])
+                        # DO NOT MASK OR DELETE unless absolutely required:
+                        # subprocess.run(["rm", f"/etc/systemd/system/{service}"])
+
+                    completed.append(item)
+
+                except Exception as e:
+                    print(f"⚠️ Failed to execute {action} on {service}: {e}")
+
+            # ✅ Report completed ones
+            if completed:
+                try:
+                    requests.post(
+                        f"{SERVER_URL}/api/devices/{DEVICE_ID}/services/clear-completed",
+                        json=completed
+                    )
+                except Exception as e:
+                    print("❌ Failed to report completed service actions:", e)
+    except Exception as e:
+        print("❌ Failed to enforce service actions:", e)
+      
 
 def fetch_pending_process_kills():
     try:
@@ -459,21 +497,6 @@ def fetch_service_removals():
         pass
     return []
 
-def stop_and_disable_service(name):
-    try:
-        subprocess.run(['systemctl', 'stop', name], check=True)
-        subprocess.run(['systemctl', 'disable', name], check=True)
-        subprocess.run(['systemctl', 'disable', '--now', name], check=True)
-        subprocess.run(['systemctl', 'mask', name], check=True)  # optional: mask to prevent restart
-        print(f" Service '{name}' stopped and disabled.")
-    except Exception as e:
-        print(f" Failed to stop/disable service '{name}': {e}")
-
-def handle_pending_service_removals():
-    targets = fetch_service_removals()
-    for service in targets:
-        stop_and_disable_service(service)
-
 
 def apply_patch_update():
     try:
@@ -520,6 +543,46 @@ def handle_pending_actions():
     except Exception as e:
         print(f"Error handling patch actions: {e}")
 
+def lock_current_user():
+    username = getpass.getuser()
+    try:
+        print(f"🔒 Locking user: {username}")
+
+        # 1. Kill all user sessions
+        subprocess.run(["pkill", "-KILL", "-u", username], check=False)
+        print(f"🔫 Logged out all sessions for '{username}'")
+
+        # 2. Lock the account
+        subprocess.run(["usermod", "-L", username], check=True)
+        print(f"🔐 Account for '{username}' has been locked.")
+        
+    except Exception as e:
+        print(f"❌ Failed to lock user '{username}': {e}")
+
+def unlock_current_user():
+    username = getpass.getuser()
+    try:
+        subprocess.run(["usermod", "-U", username], check=True)
+        print(f"✅ User '{username}' unlocked.")
+    except Exception as e:
+        print(f"❌ Failed to unlock user '{username}':", e)
+
+
+def enforce_system_actions():
+    try:
+        res = requests.get(f"{SERVER_URL}/api/devices/{DEVICE_ID}/actions")
+        if res.status_code == 200:
+            actions = res.json()
+
+            if "lock-user" in actions:
+                lock_current_user()
+
+            if "unlock-user" in actions:
+                unlock_current_user()
+
+    except Exception as e:
+        print("❌ Failed to enforce system actions:", e)
+
 
 # ---------------- RUN ----------------
 
@@ -528,8 +591,9 @@ if __name__ == "__main__":
     handle_extensions()
     enforce_software_uninstall()
     push_services()
-    handle_pending_service_removals()
     enforce_service_actions()
     enforce_process_kills()
     check_and_execute_system_actions()
+    enforce_service_actions() 
     handle_pending_actions()
+    enforce_system_actions()
