@@ -7,12 +7,14 @@ export default function MainLayout({ onLogout }) {
   const [searchQuery, setSearchQuery] = useState('');
 
   return (
-    <div className="flex min-h-screen bg-lightbg text-sidebarText">
-      {/* Sidebar */}
-      <Sidebar onLogout={onLogout} />
+    <div className="flex bg-lightbg text-sidebarText">
+      {/* Sticky Sidebar */}
+      <div className="fixed top-0 left-0 h-screen w-64 z-10">
+        <Sidebar onLogout={onLogout} />
+      </div>
 
-      {/* Main content area */}
-      <div className="flex-1 p-6">
+      {/* Main content area with left margin to avoid overlapping */}
+      <div className="ml-64 flex-1 p-6 min-h-screen overflow-y-auto">
         {/* Top search bar */}
         <div className="mb-6">
           <input
@@ -24,7 +26,7 @@ export default function MainLayout({ onLogout }) {
           />
         </div>
 
-        {/* Pass searchQuery to child routes like /devices */}
+        {/* Pass searchQuery to child routes */}
         <Outlet context={{ searchQuery }} />
       </div>
     </div>
