@@ -12,13 +12,13 @@ const navItems = [
 
 export default function Sidebar({ onLogout }) {
   return (
-    <div className="bg-primary text-sidebarText min-h-screen w-64 flex flex-col justify-between">
+    <div className="fixed top-0 left-0 h-screen w-64 bg-primary text-sidebarText flex flex-col justify-between z-50">
       <div>
         <div className="text-center p-6 border-b border-gray-700">
           <h1 className="text-2xl font-bold">🛡️ MonAlac</h1>
         </div>
 
-        <nav className="p-4 space-y-1">
+        <nav className="p-4 space-y-1 overflow-y-auto">
           {navItems.map(item => (
             <NavLink
               key={item.to}
