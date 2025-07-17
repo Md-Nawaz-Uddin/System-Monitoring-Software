@@ -1,11 +1,13 @@
+# app.py
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import func
 from flask_migrate import Migrate
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
-from models import db, User, ExtensionPolicy
-import datetime
+from models import db, User, ExtensionPolicy, CommandLog, DeviceReport
+from datetime import datetime, timedelta
 import traceback
 import psutil
 
@@ -18,49 +20,52 @@ device_services_store = {}
 pending_process_kills = {}
 EXTENSION_BLACKLISTS = {}
 pending_system_actions = {}
+usb_whitelist = {}
 
-
-
-# Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
+# --------------------- CONFIG ---------------------
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////home/nawaz/System-Monitoring-Software/backend/data.db'  # <-- use persistent DB
 app.config['SECRET_KEY'] = '4ad0fcf56a5e23464bc68e21c796c789'
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['SESSION_COOKIE_SECURE'] = False  # Set True if using HTTPS
+app.config['SESSION_COOKIE_SECURE'] = False
 
-# Initialize Extensions
 db.init_app(app)
 bcrypt = Bcrypt(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
 with app.app_context():
     db.create_all()
-
     if not User.query.filter_by(username='admin').first():
         hashed_password = bcrypt.generate_password_hash("admin123").decode('utf-8')
-        admin = User(username="admin", password=hashed_password)
+        admin = User(username="admin", password=hashed_password, role="admin")
         db.session.add(admin)
         db.session.commit()
 
-# CORS: Allow frontend at specific IP
+# --------------------- HELPERS ---------------------
+def log_action(user, action, device, details=None):
+    try:
+        log = CommandLog(user=user, action=action, device=device, details=details)
+        db.session.add(log)
+        db.session.commit()
+    except Exception as e:
+        print(f"❌ Failed to log action: {e}")
+
+# --------------------- AUTH ---------------------
 CORS(app, supports_credentials=True, origins=["http://192.168.32.87:3000"])
 
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
 
-#  Auth Routes
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
     username = data.get("username")
     password = data.get("password")
-
     user = User.query.filter_by(username=username).first()
     if user and bcrypt.check_password_hash(user.password, password):
         login_user(user)
         return jsonify({"status": "logged in", "username": user.username})
-    else:
-        return jsonify({"error": "Invalid credentials"}), 401
+    return jsonify({"error": "Invalid credentials"}), 401
 
 @app.route('/api/logout', methods=['POST'])
 @login_required
@@ -82,27 +87,35 @@ def current_user_info():
 def me():
     return jsonify(username=current_user.username, role=current_user.role)
 
-#  Devices Endpoint for UI
+# --------------------- COMMAND LOGS ---------------------
+@app.route('/api/command-log')
+def command_log():
+    logs = CommandLog.query.order_by(CommandLog.time.desc()).limit(100).all()
+    return jsonify([{
+        "user": log.user,
+        "action": log.action,
+        "device": log.device,
+        "timestamp": log.time.strftime('%Y-%m-%d %H:%M:%S')
+    } for log in logs])
+
+@app.route('/api/audit-logs')
+def get_audit_logs():
+    device_id = request.args.get("device_id")
+    logs = CommandLog.query.filter_by(device=device_id).order_by(CommandLog.time.desc()).all()
+    return jsonify([
+        {
+            "user": log.user,
+            "action": log.action,
+            "device": log.device,
+            "timestamp": log.time.isoformat(),
+            "details": log.details or "-"
+        } for log in logs
+    ])
+
+# --------------------- DEVICE ROUTES ---------------------
 @app.route('/api/devices', methods=['GET'])
 def get_devices():
     return jsonify(list(device_store.values()))
-
-#  Command Log
-@app.route('/api/command-log')
-def command_log():
-    logs = [
-        {
-            "user": "admin",
-            "action": "Uninstalled VS Code",
-            "timestamp": "2025-06-20 13:50"
-        },
-        {
-            "user": "nawaz",
-            "action": "Shutdown system",
-            "timestamp": "2025-06-20 12:40"
-        }
-    ]
-    return jsonify(logs)
 
 @app.route('/api/devices/<hostname>/inventory', methods=['POST'])
 def receive_inventory(hostname):
@@ -122,7 +135,61 @@ def get_inventory(hostname):
         return jsonify({'error': 'Inventory not found'}), 404
     return jsonify(device['inventory'])
 
-# ---- ROUTES FOR EXTENSIONS------
+# --------------------- SYSTEM ACTIONS ---------------------
+@app.route('/api/devices/<device_id>/action/shutdown', methods=['POST'])
+def request_shutdown(device_id):
+    pending_system_actions.setdefault(device_id, []).append('shutdown')
+    log_action(current_user.username, "Shutdown", device_id)
+    return jsonify({"status": "shutdown requested"})
+    
+
+@app.route('/api/devices/<device_id>/action/restart', methods=['POST'])
+def request_restart(device_id):
+    pending_system_actions.setdefault(device_id, []).append('restart')
+    log_action(current_user.username, "Restart", device_id)
+    return jsonify({"status": "restart requested"})
+
+@app.route('/api/devices/<device_id>/action/lock', methods=['POST'])
+def lock_user(device_id):
+    pending_service_actions.setdefault(device_id, []).append("lock-user")
+    log_action(current_user.username, "Lock User", device_id)
+    return jsonify({"status": "lock queued"})
+
+@app.route('/api/devices/<device_id>/action/unlock', methods=['POST'])
+def unlock_user(device_id):
+    pending_service_actions.setdefault(device_id, []).append("unlock-user")
+    log_action(current_user.username, "Unlock User", device_id)
+    return jsonify({"status": "unlock queued"})
+
+@app.route('/api/devices/<device_id>/actions/pending', methods=['GET'])
+def get_pending_system_actions(device_id):
+    return jsonify(pending_system_actions.get(device_id, []))
+
+
+@app.route('/api/devices/<device_id>/action/enable-usb', methods=['POST'])
+def enable_usb_temporarily(device_id):
+    data = request.json or {}
+    duration_minutes = int(data.get("duration", 15))
+    until_time = datetime.datetime.utcnow() + datetime.timedelta(minutes=duration_minutes)
+    usb_whitelist[device_id] = {"until": until_time.isoformat()}
+    log_action(current_user.username, f"Enable USB for {duration_minutes} min", device_id)
+    return jsonify({"status": "usb enabled", "until": until_time.isoformat()})
+
+@app.route('/api/devices/<device_id>/action/usb-enable-pending', methods=['GET'])
+def get_usb_enable_pending(device_id):
+    entry = usb_whitelist.get(device_id)
+    if not entry:
+        return jsonify({"enable_usb": False})
+
+    expiry = datetime.datetime.fromisoformat(entry["until"])
+    if expiry > datetime.datetime.utcnow():
+        return jsonify({"enable_usb": True})
+    
+    usb_whitelist.pop(device_id, None)
+    return jsonify({"enable_usb": False})
+
+
+# ---------------- EXTENSIONS ----------------
 
 @app.route('/api/devices/<device_id>/extension-policy', methods=['GET'])
 def get_policy(device_id):
@@ -134,107 +201,73 @@ def get_policy(device_id):
 
 @app.route('/api/devices/<device_id>/extension-policy', methods=['POST'])
 def update_policy(device_id):
-    data = request.json  # Expected: {"vscode": ["ext1", "ext2"], "browser": [...]}
+    data = request.json
+    ExtensionPolicy.query.filter_by(device_id=device_id, mode='whitelist').delete()
+    for ext_type, names in data.items():
+        for name in names:
+            db.session.add(ExtensionPolicy(
+                device_id=device_id,
+                ext_type=ext_type,
+                name=name,
+                mode='whitelist'
+            ))
+    db.session.commit()
+    log_action(current_user.username, "Update Whitelist Policy", device_id, details=f"Updated: {list(data.keys())}")
+    return jsonify({"status": "success"})
 
-    if not isinstance(data, dict):
-        return jsonify({"error": "Invalid payload"}), 400
+@app.route('/api/devices/<device_id>/extension-blacklist', methods=['GET'])
+def get_blacklist(device_id):
+    entries = ExtensionPolicy.query.filter_by(device_id=device_id, ext_type='blacklist').all()
+    return jsonify({'vscode': [e.name for e in entries]})
 
-    try:
-        # Delete existing whitelist entries
-        ExtensionPolicy.query.filter_by(device_id=device_id, mode='whitelist').delete()
-        db.session.commit()
-
-        # Add new whitelist entries
-        for ext_type, names in data.items():
-            for name in names:
-                db.session.add(ExtensionPolicy(
-                    device_id=device_id,
-                    ext_type=ext_type,
-                    name=name,
-                    mode='whitelist'
-                ))
-        db.session.commit()
-        return jsonify({"status": "whitelist updated"})
-
-    except Exception as e:
-        print(f"❌ Failed to update whitelist: {e}")
-        return jsonify({"error": "Server failed to update whitelist"}), 500
-
+@app.route('/api/devices/<device_id>/extension-blacklist', methods=['POST'])
+def update_blacklist(device_id):
+    data = request.json
+    ExtensionPolicy.query.filter_by(device_id=device_id, ext_type='blacklist').delete()
+    for name in data.get("vscode", []):
+        db.session.add(ExtensionPolicy(device_id=device_id, ext_type="blacklist", name=name))
+    db.session.commit()
+    log_action(current_user.username, "Update Extension Blacklist", device_id, details=f"Blacklisted: {data.get('vscode')}")
+    return jsonify({"status": "blacklist updated"})
 
 @app.route('/api/devices/<device_id>/extensions', methods=['POST'])
 def receive_extensions(device_id):
     data = request.json
-    print(f"🔧 Incoming extensions for {device_id}: {data}")
-
-    if not isinstance(data, list):
-        return jsonify({"error": "Expected a list of extensions"}), 400
-
     if device_id not in device_store:
-        device_store[device_id] = {
-            "id": device_id,
-            "hostname": device_id,
-            "status": "online",
-            "ip": "unknown",
-            "os": "unknown"
-        }
-
+        device_store[device_id] = {"id": device_id}
     device_store[device_id]["extensions"] = data
-    print(f"✅ Stored extensions for {device_id}: {device_store[device_id]['extensions']}")
     return jsonify({"status": "extensions received"})
 
 @app.route('/api/devices/<device_id>/extensions', methods=['GET'])
 def get_device_extensions(device_id):
-    device = device_store.get(device_id)
-    if device:
-        return jsonify(device.get("extensions", []))
-    else:
-        return jsonify([])
+    return jsonify(device_store.get(device_id, {}).get("extensions", []))
 
 @app.route('/api/devices/<device_id>/extensions/<ext_name>', methods=['DELETE'])
 def request_extension_removal(device_id, ext_name):
     if device_id not in pending_removals:
         pending_removals[device_id] = []
     pending_removals[device_id].append(ext_name)
-    print(f"🗑️ Marked for removal: {ext_name} from {device_id}")
+    log_action(current_user.username, "Remove Extension", device_id, details=ext_name)
     return jsonify({"status": "marked for removal"})
 
 @app.route('/api/devices/<device_id>/extensions/pending-removal', methods=['GET'])
 def get_pending_removals(device_id):
     return jsonify(pending_removals.get(device_id, []))
 
-# ---- BLACKLIST (now in-memory, not DB) ----
 
-@app.route('/api/devices/<device_id>/extension-blacklist', methods=['GET'])
-def get_blacklist(device_id):
-    return jsonify({'vscode': EXTENSION_BLACKLISTS.get(device_id, [])})
-
-@app.route('/api/devices/<device_id>/extension-blacklist', methods=['POST'])
-def update_blacklist(device_id):
-    data = request.json  # Expecting { "vscode": ["tabnine", "some.other.id"] }
-    EXTENSION_BLACKLISTS[device_id] = data.get("vscode", [])
-    print(f"🔒 Updated in-memory blacklist for {device_id}: {EXTENSION_BLACKLISTS[device_id]}")
-    return jsonify({"status": "blacklist updated"})
-
+# ---------------- SOFTWARE ----------------
 
 @app.route('/api/devices/<device_id>/software', methods=['POST'])
 def receive_software(device_id):
     data = request.json
-    if not isinstance(data, list):
-        return jsonify({"error": "Invalid format"}), 400
-
     if device_id not in device_software_store:
         device_software_store[device_id] = []
-
-    # Merge new software/processes with existing
     existing = device_software_store[device_id]
     all_names = {s["name"]: s for s in existing}
-
     for item in data:
-        all_names[item["name"]] = item  # update or add
-
+        all_names[item["name"]] = item
     device_software_store[device_id] = list(all_names.values())
     return jsonify({"status": "software received"}), 200
-
 
 @app.route('/api/devices/<device_id>/software', methods=['GET'])
 def get_software_info(device_id):
@@ -245,50 +278,53 @@ def request_software_uninstall(device_id, software_name):
     if device_id not in pending_removals:
         pending_removals[device_id] = []
     pending_removals[device_id].append(software_name)
-    print(f" Software marked for uninstall: {software_name} from {device_id}")
+    log_action(current_user.username, "Uninstall Software", device_id, details=software_name)
     return jsonify({"status": "marked for uninstall"})
 
 @app.route('/api/devices/<device_id>/software/pending-removal', methods=['GET'])
 def get_software_pending_removal(device_id):
     return jsonify(pending_removals.get(device_id, []))
 
-# 1. POST: Receive services from agent
+
+# ---------------- SERVICES ----------------
+
 @app.route('/api/devices/<device_id>/services', methods=['POST'])
 def receive_services(device_id):
-    data = request.json
-    if not isinstance(data, list):
-        return jsonify({"error": "Invalid format"}), 400
-    device_services_store[device_id] = data
+    device_services_store[device_id] = request.json
     return jsonify({"status": "services received"}), 200
 
-# 2. GET: Fetch current services for frontend
 @app.route('/api/devices/<device_id>/services', methods=['GET'])
 def get_services(device_id):
     return jsonify(device_services_store.get(device_id, []))
 
-# 3. POST: Queue a service action (start/stop/restart/disable/delete)
 @app.route('/api/devices/<device_id>/services/<service_name>/<action>', methods=['POST'])
 def queue_service_action(device_id, service_name, action):
-    valid_actions = ["start", "stop", "restart", "disable", "delete"]
-    if action not in valid_actions:
-        return jsonify({"error": "Invalid action"}), 400
-
     if device_id not in pending_service_actions:
         pending_service_actions[device_id] = []
-
     pending_service_actions[device_id].append({
         "service": service_name,
         "action": action,
-        "timestamp": datetime.datetime.now().isoformat()
+        "timestamp": datetime.datetime.utcnow().isoformat()
     })
-
-    print(f"📦 Queued service action: {action} on {service_name} for {device_id}")
+    log_action(current_user.username, f"Service {action.capitalize()}", device_id, details=service_name)
     return jsonify({"status": "queued", "action": action})
 
-# 4. GET: Agent polls this to fetch all pending actions
 @app.route('/api/devices/<device_id>/services/pending-actions', methods=['GET'])
 def get_pending_service_actions(device_id):
     return jsonify(pending_service_actions.get(device_id, []))
+
+@app.route('/api/devices/<device_id>/services/clear-completed', methods=['POST'])
+def clear_completed_service_actions(device_id):
+    completed = request.json
+    if device_id in pending_service_actions:
+        pending_service_actions[device_id] = [
+            a for a in pending_service_actions[device_id]
+            if a not in completed
+        ]
+    return jsonify({"status": "cleared"})
+
+
+# ---------------- PROCESS KILL (RUN ONCE / INDEFINITE) ----------------
 
 @app.route('/api/devices/<device_id>/processes/<name>/kill', methods=['POST'])
 def queue_process_kill(device_id, name):
@@ -307,6 +343,7 @@ def queue_process_kill(device_id, name):
             "timestamp": datetime.datetime.now().isoformat()
         })
         print(f"📦 Queued process kill: {name} ({mode}) for {device_id}")
+        log_action(current_user.username, "Kill Process", device_id, details=f"{name} ({mode})")
     return jsonify({"status": "queued", "process": name, "mode": mode})
 
 
@@ -345,61 +382,36 @@ def delete_pending_kill(device_id, name):
     print(f"✅ Cleared 'once' mode kill for '{name}' on {device_id}")
     return jsonify({"status": "cleared"}), 200
 
-@app.route('/api/devices/<device_id>/action/shutdown', methods=['POST'])
-def request_shutdown(device_id):
-    pending_system_actions.setdefault(device_id, []).append('shutdown')
-    return jsonify({"status": "shutdown requested"})
-
-@app.route('/api/devices/<device_id>/action/restart', methods=['POST'])
-def request_restart(device_id):
-    pending_system_actions.setdefault(device_id, []).append('restart')
-    return jsonify({"status": "restart requested"})
-
-@app.route('/api/devices/<device_id>/actions/pending', methods=['GET'])
-def get_pending_system_actions(device_id):
-    return jsonify(pending_system_actions.get(device_id, []))
-
-@app.route('/api/devices/<device_id>/actions/clear', methods=['POST'])
-def clear_pending_system_actions(device_id):
-    pending_system_actions.pop(device_id, None)
-    return jsonify({"status": "cleared"})
+# ---------------- PATCH SYSTEM ----------------
 
 @app.route('/api/devices/<device_id>/actions/patch-system', methods=['POST'])
 def trigger_patch_system(device_id):
     if device_id not in pending_service_actions:
         pending_service_actions[device_id] = []
-    pending_service_actions[device_id].append({
-    "action": "patch",
-    "service": "patch-system"
-})
+    pending_service_actions[device_id].append("patch-system")
+    log_action(current_user.username, "Patch System", device_id)
     return jsonify({"status": "patch queued"})
 
 @app.route('/api/devices/<device_id>/actions', methods=['GET'])
 def get_pending_actions(device_id):
     return jsonify(pending_service_actions.get(device_id, []))
 
-
 @app.route('/api/devices/<device_id>/actions/patch-result', methods=['POST'])
 def receive_patch_result(device_id):
     data = request.json
-    output = data.get("output", "")
-    status = data.get("status", "unknown")
-
+    result = {
+        "status": data.get("status", "unknown"),
+        "timestamp": datetime.datetime.utcnow().isoformat()
+    }
     if "patch_results" not in device_store:
         device_store["patch_results"] = {}
-    device_store["patch_results"][device_id] = {
-        "status": status,
-        "timestamp": datetime.datetime.utcnow().isoformat(),
-    }
+    device_store["patch_results"][device_id] = result
 
     if device_id in pending_service_actions:
         pending_service_actions[device_id] = [
-            action for action in pending_service_actions[device_id]
-            if action != "patch-system"
+            a for a in pending_service_actions[device_id] if a != "patch-system"
         ]
-
     return jsonify({"status": "result stored"})
-
 
 @app.route('/api/devices/<device_id>/actions/patch-status', methods=['GET'])
 def get_patch_status(device_id):
@@ -408,8 +420,45 @@ def get_patch_status(device_id):
         return jsonify({"status": "pending"})
     return jsonify(result)
 
+#------------------Dashboard UI---------------
 
-# Run App
+@app.route('/api/dashboard/stats', methods=['GET'])
+def get_dashboard_stats():
+    # Total distinct devices
+    total_devices = db.session.query(DeviceReport.hostname).distinct().count()
+
+    # Get latest report per device
+    latest_reports = db.session.query(DeviceReport.hostname, func.max(DeviceReport.timestamp)).group_by(DeviceReport.hostname).all()
+
+    online_devices = 0
+    now = datetime.utcnow()
+
+    for hostname, last_seen in latest_reports:
+        if now - last_seen < timedelta(minutes=5):  # adjust as per agent interval
+            online_devices += 1
+
+    offline_devices = total_devices - online_devices
+
+    # Recent activity (last 10 actions)
+    recent_logs = CommandLog.query.order_by(CommandLog.time.desc()).limit(10).all()
+    log_data = [{
+        "user": log.user,
+        "action": log.action,
+        "device": log.device,
+        "timestamp": log.time.isoformat(),
+        "details": log.details
+    } for log in recent_logs]
+
+    return jsonify({
+        "total_devices": total_devices,
+        "online_devices": online_devices,
+        "offline_devices": offline_devices,
+        "recent_activity": log_data
+    })
+
+
+    
+# --------------------- RUN ---------------------
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
 
