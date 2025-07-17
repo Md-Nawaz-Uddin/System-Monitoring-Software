@@ -434,7 +434,7 @@ def get_dashboard_stats():
     now = datetime.utcnow()
 
     for hostname, last_seen in latest_reports:
-        if now - last_seen < timedelta(minutes=5):  # adjust as per agent interval
+        if now - last_seen < timedelta(minutes=2):  # adjust as per agent interval
             online_devices += 1
 
     offline_devices = total_devices - online_devices
@@ -456,8 +456,27 @@ def get_dashboard_stats():
         "recent_activity": log_data
     })
 
+@app.route('/api/devices/<device_id>/report', methods=['POST'])
+def report_device(device_id):
+    data = request.get_json()
+    print(f"[DEBUG] Device Report from {device_id}: {data}")
+    if not data:
+        return jsonify({"error": "Invalid JSON"}), 400
 
-    
+    report = DeviceReport(
+        hostname=data.get('hostname'),
+        os=data.get('os'),
+        ip=data.get('ip'),
+        status=data.get('status'),
+        cpu=data.get('cpu'),
+        ram=data.get('ram'),
+        disk=data.get('disk'),
+        timestamp=datetime.utcnow()
+    )
+    db.session.add(report)
+    db.session.commit()
+    return jsonify({"message": "Report saved successfully"}), 201
+
 # --------------------- RUN ---------------------
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
