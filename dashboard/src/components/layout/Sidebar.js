@@ -7,7 +7,7 @@ const navItems = [
   { to: '/devices', label: 'Devices', icon: <Search size={18} /> },
   { to: '/settings', label: 'Settings', icon: <Settings size={18} /> },
   { to: '/roles', label: 'Roles', icon: <Users size={18} /> },
-  { to: '/recent', label: 'Recent Activity', icon: <Clock size={18} /> }
+  { to: '/activity', label: 'Recent Activity', icon: <Clock size={18} /> }
 ];
 
 export default function Sidebar({ onLogout }) {
